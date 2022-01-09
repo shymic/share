@@ -1,0 +1,321 @@
+Communication_Partner_Id;Message_Date_Id;TP_Code;Direction;Message_Specification_Name;Message_Type;Application_System;Number_Of_Interchanges;Number_Of_Messages;Community;Routing_Id  ;Transport_Layer
+WITH wumaxldc AS (
+select techcom.community, techcom.routing_id, wuldc.load_cycle_id as wu_load_cycle_id, max(techcom.load_cycle_id) as techcom_load_cycle_id
+from
+  behrelu.tz2500cp wuldc, etl_p.tz2560cp techcom
+where
+      wuldc.fk4tz2560routing is not null
+  and wuldc.fk4tz2560routing <> ''
+  and wuldc.tp_code_client  = '1'
+  and techcom.community     = wuldc.FK4TZ2560community
+  and techcom.routing_id    = wuldc.fk4tz2560routing
+  and techcom.load_cycle_id <= wuldc.load_cycle_id
+group by techcom.community, techcom.routing_id, wuldc.load_cycle_id
+),
+edimaxldc AS (
+select tpc.client, tpc.tp_code, ediMsg.load_cycle_id as edi_load_cycle_id, max(tpc.load_cycle_id) as tpc_load_cycle_id
+from etl_p.tz2300cp_edi tpc, behrelu.tz2340cp ediMsg
+where
+      ediMsg.client = '1'
+  and ediMsg.lc_valid_state_a= 'A'
+  and tpc.client        =  ediMsg.client
+  and tpc.tp_code       =  ediMsg.tp_code
+  and tpc.load_cycle_id <= ediMsg.load_cycle_id
+  group by tpc.client, tpc.tp_code, ediMsg.load_cycle_id
+)
+
+
+select opl.opl_id, dte.date_id, ediData.tp_code, ediData.direction, ediData.rp_msg_spec_name, tpc.e_msg_type, tpc.s_application_syst as application_system, sum(ediData.inter_count) as inter_count, sum(ediData.msg_count) as msg_count, ediData.community, ediData.routing_id, ediData.transport
+from
+  -- Aggregation aller Daten auf die Businessparameter. Hier gehen die Einzelnachrichten 'verloren'.
+  (select tp_code, client, direction, rp_msg_spec_name, count(group_id_number) as inter_count , sum(count) as msg_count, msg_year, msg_day_of_year, load_cycle_id, community, routing_id, transport
+  from
+  (
+
+--------------------------------------------------------------------------------------------------
+-- Alle positven Daten ber Axway
+-- Wir gehen davon aus, dass Nachrichten, die eine RoutingID haben positiv durch das EGW gelaufen sind.
+-- Diese wird erst im Status GTYPROCESSED (TPMapOutbBean) gesetzt.
+-- Daten, die dann nicht Versendet werden werden nicht als Fehlerhaft betrachtet
+--------------------------------------------------------------------------------------------------
+
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu, etl_p.tz2560cp techcom, wumaxldc
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number <> 0) and (ediMsg.group_id_number = wu.edi_group_id))
+    and wu.fk4tz2560routing is not null
+    and wu.fk4tz2560routing <> ''
+    -- find the right load cycle entry
+    and wu.FK4TZ2560community = wumaxldc.community
+    and wu.fk4tz2560routing   = wumaxldc.routing_id
+    and wu.load_cycle_id      = wumaxldc.wu_load_cycle_id
+    -- find the corresponding techcom entry
+    and techcom.community     = wumaxldc.community
+    and techcom.routing_id    = wumaxldc.routing_id
+    and techcom.load_cycle_id = wumaxldc.techcom_load_cycle_id
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    )
+
+    union all
+
+    -- Aggregation (Anzahl) ber alle EDI Outbound Nachrichten, die als Einzelnachricht ber Axway versendet wurden
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu, etl_p.tz2560cp techcom, wumaxldc
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number = 0) and (ediMsg.id_number = wu.edi_message_id))
+    and wu.fk4tz2560routing is not null
+    and wu.fk4tz2560routing <> ''
+    -- find the right load cycle entry
+    and wu.FK4TZ2560community = wumaxldc.community
+    and wu.fk4tz2560routing   = wumaxldc.routing_id
+    and wu.load_cycle_id      = wumaxldc.wu_load_cycle_id
+    -- find the corresponding techcom entry
+    and techcom.community     = wumaxldc.community
+    and techcom.routing_id    = wumaxldc.routing_id
+    and techcom.load_cycle_id = wumaxldc.techcom_load_cycle_id
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    )
+
+    union all
+
+    -- Aggregation (Anzahl) ber alle EDI Inbound Nachrichten, die ber Axway versendet werden.
+    -- Da die GruppenId in der TZ2340 nicht gepflegt wird hat nur die erste Nachricht einer Gruppe hat einen Verweis zur TZ2500.
+    -- Die Anzahl der Nachrichten steht dann im Feld number_of_messages
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu, etl_p.tz2560cp techcom, wumaxldc
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and wu.fk4tz2560routing is not null
+    and wu.fk4tz2560routing <> ''
+    -- find the right load cycle entry
+    and wu.FK4TZ2560community = wumaxldc.community
+    and wu.fk4tz2560routing   = wumaxldc.routing_id
+    and wu.load_cycle_id      = wumaxldc.wu_load_cycle_id
+    -- find the corresponding techcom entry
+    and techcom.community     = wumaxldc.community
+    and techcom.routing_id    = wumaxldc.routing_id
+    and techcom.load_cycle_id = wumaxldc.techcom_load_cycle_id
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, techcom.community, techcom.routing_id, techcom.transport
+    )
+
+    union all
+--------------------------------------------------------------------------------------------------
+-- Alle positven Daten ber ComServer
+--------------------------------------------------------------------------------------------------
+
+    -- Outbounddaten Gruppe (fk4tz2560routing ist leer und status is Processed)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ComServer' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number <> 0) and (ediMsg.group_id_number = wu.edi_group_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark <> 'ALL MESSAGES WITH EXIT SUCCESS.'
+    and wu.status = 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI' , 'ComServer' , 'NotSpecified' , 0
+    )
+
+    union all
+
+    -- Outbounddaten Einzelnachrichten (fk4tz2560routing ist leer und status is Processed)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ComServer' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number = 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark <> 'ALL MESSAGES WITH EXIT SUCCESS.'
+    and wu.status = 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI' , 'ComServer' , 'NotSpecified' , 0
+    )
+
+    union all
+
+    -- Inbounddaten (fk4tz2560routing ist leer und status is Processed) sum(number_of_messages)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ComServer' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark <> 'ALL MESSAGES WITH EXIT SUCCESS.'
+    and wu.status = 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ComServer', 'NotSpecified', 0
+    )
+
+    union all
+
+--------------------------------------------------------------------------------------------------
+-- Alle Exit Success Daten
+--------------------------------------------------------------------------------------------------
+
+    -- Outbounddaten Gruppen  (status = 'PROCESSED')
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ExitSuccess' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number <> 0) and (ediMsg.group_id_number = wu.edi_group_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark = 'ALL MESSAGES WITH EXIT SUCCESS.'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+    -- Outbounddaten Einzelnachrichten (status = 'PROCESSED')
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ExitSuccess' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number = 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark = 'ALL MESSAGES WITH EXIT SUCCESS.'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+    -- Inbounddaten (status = 'PROCESSED')  sum(number_of_messages)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ExitSuccess' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status_remark = 'ALL MESSAGES WITH EXIT SUCCESS.'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+    -- Inbounddaten (status = 'PROCESSED')  sum(number_of_messages) (Axway)
+    -- kann man auch mit der vorherigen Query zusammenfhren, aber evtl. braucht man spter mal die routing Informationen
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'ExitSuccess' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and wu.fk4tz2560routing is not null
+    and wu.fk4tz2560routing <> ''
+    and wu.status_remark = 'ALL MESSAGES WITH EXIT SUCCESS.'
+    -- find the right load cycle entry
+    -- and wu.FK4TZ2560community = wumaxldc.community
+    -- and wu.fk4tz2560routing   = wumaxldc.routing_id
+    -- and wu.load_cycle_id      = wumaxldc.wu_load_cycle_id
+    -- find the corresponding techcom entry
+    -- and techcom.community     = wumaxldc.community
+    -- and techcom.routing_id    = wumaxldc.routing_id
+    -- and techcom.load_cycle_id = wumaxldc.techcom_load_cycle_id
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+--------------------------------------------------------------------------------------------------
+-- Fehlerhafte Nachrichten
+--   status <> PROCESSED, fk4tz2560routing is null (wird leider auch nicht bei den Axway Daten outbound gesetzt)
+--  Bei den Inbound Daten ist fk4tz2560routing gesetzt
+--------------------------------------------------------------------------------------------------
+
+    -- Fehlerhafte Nachrichten  Gruppen (Outbound)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'Error' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number <> 0) and (ediMsg.group_id_number = wu.edi_group_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status <> 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+    -- Fehlerhafte Nachrichten Einzelnachrichten (Outbound)
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, count(*) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'Error' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where ediMsg.client = '1'
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'O'
+    and ((ediMsg.group_id_number = 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status <> 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+     -- Fehlerhafte Nachrichten  (Inbound ComServer)
+     -- TPCode not found: Client = null
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI' as community, 'Error' as routing_id, 'NotSpecified' as transport
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where (ediMsg.client = '1' or  ediMsg.client is null)
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and (wu.fk4tz2560routing is null or wu.fk4tz2560routing = '')
+    and wu.status <> 'PROCESSED'
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+    union all
+
+     -- Fehlerhafte Nachrichten  (Inbound ber Axway )
+     -- TPCode not found: Client = null
+     -- kann man auch mit der vorherigen Query zusammenfhren, aber evtl. braucht man spter mal die routing Informationen
+    (select ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, sum(wu.number_of_messages) as count, integer(ediMsg.creation_timestamp/100000000000) msg_year, integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000) msg_day_of_year, ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    from behrelu.tz2340cp ediMsg, behrelu.tz2500cp wu
+    where (ediMsg.client = '1' or  ediMsg.client is null)
+    and ediMsg.lc_valid_state_a= 'A'
+    and ediMsg.direction = 'I'
+    and ((ediMsg.id_number <> 0) and (ediMsg.id_number = wu.edi_message_id))
+    and wu.fk4tz2560routing is not null
+    and wu.fk4tz2560routing <> ''
+    and wu.status <> 'PROCESSED'
+    -- find the right load cycle entry
+    -- and wu.FK4TZ2560community = wumaxldc.community
+    -- and wu.fk4tz2560routing   = wumaxldc.routing_id
+    -- and wu.load_cycle_id      = wumaxldc.wu_load_cycle_id
+    -- find the corresponding techcom entry
+    -- and techcom.community     = wumaxldc.community
+    -- and techcom.routing_id    = wumaxldc.routing_id
+    -- and techcom.load_cycle_id = wumaxldc.techcom_load_cycle_id
+    group by ediMsg.tp_code, ediMsg.client, ediMsg.direction, ediMsg.group_id_number, ediMsg.rp_msg_spec_name, integer(ediMsg.creation_timestamp/100000000000), integer(ediMsg.creation_timestamp/100000000) - (integer(ediMsg.creation_timestamp/100000000000) * 1000), ediMsg.load_cycle_id, 'HLAG-EDI', 'ExitSuccess', 'NotSpecified'
+    )
+
+
+  ) group by tp_code, client, direction, rp_msg_spec_name, msg_year, msg_day_of_year, load_cycle_id, community, routing_id, transport
+  ) ediData,
+  etl_p.tz2300cp_edi tpc,
+  db2tusru.dim_organisation_place opl,
+  db2tusru.dim_date dte,
+  edimaxldc
+where
+-- find the right load cycle entry
+    ediData.client = edimaxldc.client
+and ediData.tp_code = edimaxldc.tp_code
+and ediData.load_cycle_id = edimaxldc.edi_load_cycle_id
+-- find the corresponding tp code entry
+and tpc.client = edimaxldc.client
+and tpc.tp_code = edimaxldc.tp_code
+and tpc.load_cycle_id = edimaxldc.tpc_load_cycle_id
+--
+and tpc.tp_organisation_no = opl.opl_orig_org_no
+and opl.opl_org_no = opl.opl_orig_org_no
+and dte.year0 = ediData.msg_year
+and dte.day_no_in_year = ediData.msg_day_of_year
+group by opl.opl_id, dte.date_id, ediData.tp_code, ediData.direction, ediData.rp_msg_spec_name, tpc.e_msg_type, tpc.s_application_syst, ediData.community, ediData.routing_id, ediData.transport
+;
