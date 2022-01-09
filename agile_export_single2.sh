@@ -135,7 +135,8 @@ if [ ! -f $v_sqlfilefull ]; then # does the export sql file exist?
   exit 8
 fi
 
-if [ ! grep -i 'with ur' $v_sqlfilefull ]; then # add WITH UR construction
+if ! grep -i 'with ur' $v_sqlfilefull; # add WITH UR construction
+then 
 	sed -e 's/\(.*\)[Ww][Ii][Tt][Hh] [Uu][Rr]/\1 /'  -e '1!s/\(.*\);/\1 with ur;/' $v_sqlfilefull > $v_sqlfilefull"_tmp" 
 	mv $v_sqlfilefull"_tmp" $v_sqlfilefull 
 fi
